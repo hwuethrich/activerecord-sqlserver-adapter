@@ -7,6 +7,15 @@ module ActiveRecord
           @native_database_types ||= initialize_native_database_types.freeze
         end
 
+        # Drop the database
+        def drop_database(name)
+          execute "IF EXISTS (SELECT name FROM master.dbo.sysdatabases WHERE name = #{quote(name)}) DROP DATABASE #{quote_table_name(name)}"
+        end
+
+        def set_single_user_mode(name)
+          execute "ALTER DATABASE #{quote_table_name(name)} SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+        end
+
         def tables(table_type = 'BASE TABLE')
           select_values "SELECT #{lowercase_schema_reflection_sql('TABLE_NAME')} FROM INFORMATION_SCHEMA.TABLES #{"WHERE TABLE_TYPE = '#{table_type}'" if table_type} ORDER BY TABLE_NAME", 'SCHEMA'
         end
@@ -48,7 +57,15 @@ module ActiveRecord
           do_execute "EXEC sp_rename '#{table_name}', '#{new_name}'"
         end
 
-        def remove_column(table_name, *column_names)
+        def remove_column(table_name, column_name, type, options = {})
+          raise ArgumentError.new("You must specify a column name.  Example: remove_column(:people, :first_name)") if column_name.blank?
+          remove_check_constraints(table_name, column_name)
+          remove_default_constraint(table_name, column_name)
+          remove_indexes(table_name, column_name)
+          do_execute "ALTER TABLE #{quote_table_name(table_name)} DROP COLUMN #{quote_column_name(column_name)}"
+        end
+
+        def remove_columns(table_name, *column_names)
           raise ArgumentError.new("You must specify at least one column name.  Example: remove_column(:people, :first_name)") if column_names.empty?
           ActiveSupport::Deprecation.warn 'Passing array to remove_columns is deprecated, please use multiple arguments, like: `remove_columns(:posts, :foo, :bar)`', caller if column_names.flatten!
           column_names.flatten.each do |column_name|
@@ -367,7 +384,8 @@ module ActiveRecord
         end
 
         def identity_column(table_name)
-          schema_cache.columns[table_name].detect(&:is_identity?)
+          table = Utils.unqualify_table_name table_name
+          schema_cache.columns(table).detect(&:is_identity?)
         end
 
       end
